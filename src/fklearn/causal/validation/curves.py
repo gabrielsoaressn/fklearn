@@ -95,7 +95,7 @@ def cumulative_effect_curve(df: pd.DataFrame,
     """
 
     size = df.shape[0]
-    ordered_df = df.sort_values(prediction, ascending=False).reset_index(drop=True)
+    ordered_df = df.reset_index(drop=False).sort_values([prediction, 'index'], ascending=[False, True]).reset_index(drop=True).drop(columns=['index'])
     n_rows = list(range(min_rows, size, size // steps)) + [size]
     return np.array([effect_fn(ordered_df.head(rows), treatment, outcome) for rows in n_rows])
 
