@@ -1,0 +1,196 @@
+name: Track DORA Metrics - Deployment
+
+on:
+  # Executa automaticamente quando houver push na branch master (branch principal do projeto)
+  push:
+    branches:
+      - master
+
+  # Permite execução manual para registrar falhas
+  workflow_dispatch:
+    inputs:
+      deployment_status:
+        description: 'Status do deployment (success ou failure)'
+        required: true
+        default: 'success'
+        type: choice
+        options:
+          - success
+          - failure
+
+jobs:
+  track-deployment:
+    name: Registrar Deployment
+    runs-on: ubuntu-24.04
+    # Só registra deployment se os testes passarem (exceto quando executado manualmente)
+    needs: []
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Busca todo o histórico para calcular lead time
+
+      - name: Obter informações do commit
+        id: commit-info
+        run: |
+          #!/bin/bash
+          set -euo pipefail
+
+          # Pega o SHA do commit atual
+          COMMIT_SHA="${{ github.sha }}"
+
+          # Pega o timestamp do commit (quando foi feito)
+          # Usa formato ISO 8601 compatível com diferentes sistemas
+          COMMIT_TIMESTAMP=$(git show -s --format=%cI "$COMMIT_SHA")
+
+          # Timestamp atual (momento do deployment)
+          DEPLOYMENT_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Status do deployment
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DEPLOYMENT_STATUS="${{ inputs.deployment_status }}"
+          else
+            DEPLOYMENT_STATUS="success"
+          fi
+
+          # Informações do branch
+          BRANCH_NAME="${{ github.ref_name }}"
+
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "commit_timestamp=$COMMIT_TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "deployment_timestamp=$DEPLOYMENT_TIMESTAMP" >> $GITHUB_OUTPUT
+          echo "deployment_status=$DEPLOYMENT_STATUS" >> $GITHUB_OUTPUT
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+          echo "📊 Informações do Deployment:"
+          echo "   Branch: $BRANCH_NAME"
+          echo "   Commit: $COMMIT_SHA"
+          echo "   Commit feito em: $COMMIT_TIMESTAMP"
+          echo "   Deploy realizado em: $DEPLOYMENT_TIMESTAMP"
+          echo "   Status: $DEPLOYMENT_STATUS"
+
+      - name: Calcular Lead Time
+        id: lead-time
+        run: |
+          #!/bin/bash
+          set -euo pipefail
+
+          COMMIT_TIME="${{ steps.commit-info.outputs.commit_timestamp }}"
+          DEPLOY_TIME="${{ steps.commit-info.outputs.deployment_timestamp }}"
+
+          # Converte para segundos (compatível com GNU date)
+          COMMIT_SECONDS=$(date -d "$COMMIT_TIME" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "$COMMIT_TIME" +%s)
+          DEPLOY_SECONDS=$(date -d "$DEPLOY_TIME" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "$DEPLOY_TIME" +%s)
+
+          # Calcula diferença
+          LEAD_TIME_SECONDS=$((DEPLOY_SECONDS - COMMIT_SECONDS))
+          LEAD_TIME_MINUTES=$((LEAD_TIME_SECONDS / 60))
+          LEAD_TIME_HOURS=$((LEAD_TIME_MINUTES / 60))
+
+          echo "lead_time_seconds=$LEAD_TIME_SECONDS" >> $GITHUB_OUTPUT
+          echo "lead_time_minutes=$LEAD_TIME_MINUTES" >> $GITHUB_OUTPUT
+
+          echo "⏱️  Lead Time para Mudanças:"
+          if [ $LEAD_TIME_HOURS -gt 0 ]; then
+            echo "   $LEAD_TIME_HOURS horas e $((LEAD_TIME_MINUTES % 60)) minutos"
+          else
+            echo "   $LEAD_TIME_MINUTES minutos ($LEAD_TIME_SECONDS segundos)"
+          fi
+
+      - name: Enviar dados para a API
+        id: send-metrics
+        run: |
+          #!/bin/bash
+          set -euo pipefail
+
+          # Validar que os secrets estão configurados
+          if [ -z "${{ secrets.BACKEND_API_URL }}" ]; then
+            echo "❌ ERRO: Secret BACKEND_API_URL não configurado"
+            exit 1
+          fi
+
+          if [ -z "${{ secrets.SONAR_PROJECT_KEY }}" ]; then
+            echo "❌ ERRO: Secret SONAR_PROJECT_KEY não configurado"
+            exit 1
+          fi
+
+          # Preparar payload JSON
+          PAYLOAD=$(cat <<EOF
+          {
+            "projectKey": "${{ secrets.SONAR_PROJECT_KEY }}",
+            "commitSha": "${{ steps.commit-info.outputs.commit_sha }}",
+            "commitTimestamp": "${{ steps.commit-info.outputs.commit_timestamp }}",
+            "deploymentTimestamp": "${{ steps.commit-info.outputs.deployment_timestamp }}",
+            "status": "${{ steps.commit-info.outputs.deployment_status }}",
+            "branch": "${{ steps.commit-info.outputs.branch_name }}",
+            "leadTimeSeconds": ${{ steps.lead-time.outputs.lead_time_seconds }},
+            "repository": "${{ github.repository }}",
+            "workflowRun": "${{ github.run_id }}"
+          }
+          EOF
+          )
+
+          echo "📤 Enviando dados para API..."
+          echo "URL: ${{ secrets.BACKEND_API_URL }}/api/dora/deployment"
+
+          # Fazer requisição com timeout e retry
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          SUCCESS=false
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = "false" ]; do
+            if [ $RETRY_COUNT -gt 0 ]; then
+              echo "🔄 Tentativa $(($RETRY_COUNT + 1)) de $MAX_RETRIES..."
+              sleep 2
+            fi
+
+            RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 30 -X POST \
+              "${{ secrets.BACKEND_API_URL }}/api/dora/deployment" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD" || echo -e "\nERROR")
+
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | sed '$d')
+
+            if [ "$HTTP_CODE" = "ERROR" ]; then
+              echo "⚠️  Erro de conexão com a API"
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+            elif [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+              echo "📡 Resposta da API:"
+              echo "   Status HTTP: $HTTP_CODE"
+              echo "   Corpo: $BODY"
+              echo "✅ Deployment registrado com sucesso!"
+              SUCCESS=true
+            else
+              echo "📡 Resposta da API:"
+              echo "   Status HTTP: $HTTP_CODE"
+              echo "   Corpo: $BODY"
+              echo "❌ Erro ao registrar deployment"
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+            fi
+          done
+
+          if [ "$SUCCESS" = "false" ]; then
+            echo "❌ Falha após $MAX_RETRIES tentativas"
+            exit 1
+          fi
+
+      - name: Resumo do Deployment
+        if: always()
+        run: |
+          #!/bin/bash
+
+          echo "📋 Resumo do Registro de Deployment"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Projeto: fklearn"
+          echo "Status: ${{ steps.commit-info.outputs.deployment_status }}"
+          echo "Commit: ${{ steps.commit-info.outputs.commit_sha }}"
+          echo "Lead Time: ${{ steps.lead-time.outputs.lead_time_minutes }} minutos"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          if [ "${{ steps.send-metrics.outcome }}" = "success" ]; then
+            echo "✅ Métricas DORA registradas com sucesso"
+          else
+            echo "⚠️  Houve problemas ao registrar as métricas"
+          fi
