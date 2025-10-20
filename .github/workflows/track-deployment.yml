@@ -100,6 +100,7 @@ jobs:
 
       - name: Enviar dados para a API
         id: send-metrics
+        continue-on-error: true  # Não bloqueia o workflow se a API ainda não estiver pronta
         env:
           BACKEND_URL: ${{ secrets.BACKEND_API_URL }}
           PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
@@ -180,6 +181,18 @@ jobs:
               echo "   Corpo: $BODY"
               echo "✅ Deployment registrado com sucesso!"
               SUCCESS=true
+            elif [ "$HTTP_CODE" = "404" ]; then
+              echo "📡 Resposta da API:"
+              echo "   Status HTTP: $HTTP_CODE"
+              echo ""
+              echo "⚠️  A rota /api/dora/deployment ainda não foi implementada no backend"
+              echo "📋 Próximos passos:"
+              echo "   1. Criar endpoint POST /api/dora/deployment no backend"
+              echo "   2. O endpoint deve aceitar o payload JSON mostrado acima"
+              echo "   3. Remover 'continue-on-error: true' do workflow quando a API estiver pronta"
+              echo ""
+              echo "ℹ️  Este erro não bloqueará o workflow (continue-on-error está ativo)"
+              break  # Sai do loop, não precisa tentar novamente
             else
               echo "📡 Resposta da API:"
               echo "   Status HTTP: $HTTP_CODE"
@@ -190,8 +203,10 @@ jobs:
           done
 
           if [ "$SUCCESS" = "false" ]; then
-            echo "❌ Falha após $MAX_RETRIES tentativas"
-            exit 1
+            if [ "$HTTP_CODE" != "404" ]; then
+              echo "❌ Falha após $MAX_RETRIES tentativas"
+              exit 1
+            fi
           fi
 
       - name: Resumo do Deployment
