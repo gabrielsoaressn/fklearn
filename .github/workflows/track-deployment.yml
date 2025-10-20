@@ -79,9 +79,9 @@ jobs:
           COMMIT_TIME="${{ steps.commit-info.outputs.commit_timestamp }}"
           DEPLOY_TIME="${{ steps.commit-info.outputs.deployment_timestamp }}"
 
-          # Converte para segundos (compatível com GNU date)
-          COMMIT_SECONDS=$(date -d "$COMMIT_TIME" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "$COMMIT_TIME" +%s)
-          DEPLOY_SECONDS=$(date -d "$DEPLOY_TIME" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "$DEPLOY_TIME" +%s)
+          # Converte para segundos usando formato Unix timestamp
+          COMMIT_SECONDS=$(date -d "$COMMIT_TIME" +%s)
+          DEPLOY_SECONDS=$(date -d "$DEPLOY_TIME" +%s)
 
           # Calcula diferença
           LEAD_TIME_SECONDS=$((DEPLOY_SECONDS - COMMIT_SECONDS))
@@ -100,39 +100,57 @@ jobs:
 
       - name: Enviar dados para a API
         id: send-metrics
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_API_URL }}
+          PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
         run: |
           #!/bin/bash
           set -euo pipefail
 
           # Validar que os secrets estão configurados
-          if [ -z "${{ secrets.BACKEND_API_URL }}" ]; then
+          if [ -z "$BACKEND_URL" ]; then
             echo "❌ ERRO: Secret BACKEND_API_URL não configurado"
+            echo "Configure em: Settings > Secrets and variables > Actions"
             exit 1
           fi
 
-          if [ -z "${{ secrets.SONAR_PROJECT_KEY }}" ]; then
+          if [ -z "$PROJECT_KEY" ]; then
             echo "❌ ERRO: Secret SONAR_PROJECT_KEY não configurado"
+            echo "Configure em: Settings > Secrets and variables > Actions"
             exit 1
           fi
 
           # Preparar payload JSON
-          PAYLOAD=$(cat <<EOF
+          PAYLOAD=$(cat <<'EOF'
           {
-            "projectKey": "${{ secrets.SONAR_PROJECT_KEY }}",
-            "commitSha": "${{ steps.commit-info.outputs.commit_sha }}",
-            "commitTimestamp": "${{ steps.commit-info.outputs.commit_timestamp }}",
-            "deploymentTimestamp": "${{ steps.commit-info.outputs.deployment_timestamp }}",
-            "status": "${{ steps.commit-info.outputs.deployment_status }}",
-            "branch": "${{ steps.commit-info.outputs.branch_name }}",
-            "leadTimeSeconds": ${{ steps.lead-time.outputs.lead_time_seconds }},
-            "repository": "${{ github.repository }}",
-            "workflowRun": "${{ github.run_id }}"
+            "projectKey": "PROJECT_KEY_PLACEHOLDER",
+            "commitSha": "COMMIT_SHA_PLACEHOLDER",
+            "commitTimestamp": "COMMIT_TIMESTAMP_PLACEHOLDER",
+            "deploymentTimestamp": "DEPLOYMENT_TIMESTAMP_PLACEHOLDER",
+            "status": "STATUS_PLACEHOLDER",
+            "branch": "BRANCH_PLACEHOLDER",
+            "leadTimeSeconds": LEAD_TIME_SECONDS_PLACEHOLDER,
+            "repository": "REPOSITORY_PLACEHOLDER",
+            "workflowRun": "WORKFLOW_RUN_PLACEHOLDER"
           }
           EOF
           )
 
+          # Substituir placeholders
+          PAYLOAD="${PAYLOAD//PROJECT_KEY_PLACEHOLDER/$PROJECT_KEY}"
+          PAYLOAD="${PAYLOAD//COMMIT_SHA_PLACEHOLDER/${{ steps.commit-info.outputs.commit_sha }}}"
+          PAYLOAD="${PAYLOAD//COMMIT_TIMESTAMP_PLACEHOLDER/${{ steps.commit-info.outputs.commit_timestamp }}}"
+          PAYLOAD="${PAYLOAD//DEPLOYMENT_TIMESTAMP_PLACEHOLDER/${{ steps.commit-info.outputs.deployment_timestamp }}}"
+          PAYLOAD="${PAYLOAD//STATUS_PLACEHOLDER/${{ steps.commit-info.outputs.deployment_status }}}"
+          PAYLOAD="${PAYLOAD//BRANCH_PLACEHOLDER/${{ steps.commit-info.outputs.branch_name }}}"
+          PAYLOAD="${PAYLOAD//LEAD_TIME_SECONDS_PLACEHOLDER/${{ steps.lead-time.outputs.lead_time_seconds }}}"
+          PAYLOAD="${PAYLOAD//REPOSITORY_PLACEHOLDER/${{ github.repository }}}"
+          PAYLOAD="${PAYLOAD//WORKFLOW_RUN_PLACEHOLDER/${{ github.run_id }}}"
+
           echo "📤 Enviando dados para API..."
-          echo "URL: ${{ secrets.BACKEND_API_URL }}/api/dora/deployment"
+          echo "URL: $BACKEND_URL/api/dora/deployment"
+          echo "Payload (sem informações sensíveis):"
+          echo "$PAYLOAD" | grep -v "projectKey"
 
           # Fazer requisição com timeout e retry
           MAX_RETRIES=3
@@ -146,7 +164,7 @@ jobs:
             fi
 
             RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 30 -X POST \
-              "${{ secrets.BACKEND_API_URL }}/api/dora/deployment" \
+              "$BACKEND_URL/api/dora/deployment" \
               -H "Content-Type: application/json" \
               -d "$PAYLOAD" || echo -e "\nERROR")
 
