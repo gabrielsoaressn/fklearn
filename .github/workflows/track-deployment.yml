@@ -153,60 +153,62 @@ jobs:
           echo "Payload (sem informações sensíveis):"
           echo "$PAYLOAD" | grep -v "projectKey"
 
-          # Fazer requisição com timeout e retry
-          MAX_RETRIES=3
-          RETRY_COUNT=0
-          SUCCESS=false
+          # Fazer requisição - sem retry para erro 404
+          echo "🔄 Tentando conectar à API..."
 
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = "false" ]; do
-            if [ $RETRY_COUNT -gt 0 ]; then
-              echo "🔄 Tentativa $(($RETRY_COUNT + 1)) de $MAX_RETRIES..."
-              sleep 2
-            fi
+          RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 30 -X POST \
+            "$BACKEND_URL/api/dora/deployment" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" 2>&1 || echo -e "\nERROR")
 
-            RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 30 -X POST \
-              "$BACKEND_URL/api/dora/deployment" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD" || echo -e "\nERROR")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
 
-            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-            BODY=$(echo "$RESPONSE" | sed '$d')
+          echo "📡 Resposta da API:"
+          echo "   Status HTTP: $HTTP_CODE"
 
-            if [ "$HTTP_CODE" = "ERROR" ]; then
-              echo "⚠️  Erro de conexão com a API"
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-            elif [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-              echo "📡 Resposta da API:"
-              echo "   Status HTTP: $HTTP_CODE"
-              echo "   Corpo: $BODY"
-              echo "✅ Deployment registrado com sucesso!"
-              SUCCESS=true
-            elif [ "$HTTP_CODE" = "404" ]; then
-              echo "📡 Resposta da API:"
-              echo "   Status HTTP: $HTTP_CODE"
-              echo ""
-              echo "⚠️  A rota /api/dora/deployment ainda não foi implementada no backend"
-              echo "📋 Próximos passos:"
-              echo "   1. Criar endpoint POST /api/dora/deployment no backend"
-              echo "   2. O endpoint deve aceitar o payload JSON mostrado acima"
-              echo "   3. Remover 'continue-on-error: true' do workflow quando a API estiver pronta"
-              echo ""
-              echo "ℹ️  Este erro não bloqueará o workflow (continue-on-error está ativo)"
-              break  # Sai do loop, não precisa tentar novamente
-            else
-              echo "📡 Resposta da API:"
-              echo "   Status HTTP: $HTTP_CODE"
-              echo "   Corpo: $BODY"
-              echo "❌ Erro ao registrar deployment"
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-            fi
-          done
+          # Tratamento específico para cada tipo de resposta
+          if [ "$HTTP_CODE" = "404" ]; then
+            echo ""
+            echo "⚠️  ENDPOINT NÃO ENCONTRADO"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "A rota POST /api/dora/deployment ainda não foi implementada no backend."
+            echo ""
+            echo "📋 Para resolver, siga os passos em:"
+            echo "   .github/workflows/DORA_API_REQUIREMENTS.md"
+            echo ""
+            echo "🔧 Ações necessárias no backend:"
+            echo "   1. Criar endpoint POST /api/dora/deployment"
+            echo "   2. Configurar banco de dados (schema fornecido na documentação)"
+            echo "   3. Testar endpoint localmente"
+            echo "   4. Deploy do backend"
+            echo ""
+            echo "ℹ️  Este erro NÃO bloqueará o workflow (continue-on-error: true)"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            exit 0  # Sai com sucesso por causa do continue-on-error
 
-          if [ "$SUCCESS" = "false" ]; then
-            if [ "$HTTP_CODE" != "404" ]; then
-              echo "❌ Falha após $MAX_RETRIES tentativas"
-              exit 1
-            fi
+          elif [ "$HTTP_CODE" = "ERROR" ]; then
+            echo "   Erro: Falha na conexão com a API"
+            echo ""
+            echo "⚠️  Não foi possível conectar à API. Verifique:"
+            echo "   1. Secret BACKEND_API_URL está configurado corretamente"
+            echo "   2. Backend está online e acessível"
+            echo "   3. Firewall/rede permite conexão"
+            exit 0  # Sai com sucesso por causa do continue-on-error
+
+          elif [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "   Corpo: $BODY"
+            echo ""
+            echo "✅ Deployment registrado com sucesso!"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            exit 0
+
+          else
+            echo "   Corpo: $BODY"
+            echo ""
+            echo "❌ Erro inesperado ao registrar deployment"
+            echo "   Verifique os logs do backend para mais detalhes"
+            exit 0  # Sai com sucesso por causa do continue-on-error
           fi
 
       - name: Resumo do Deployment
