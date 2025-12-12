@@ -102,24 +102,15 @@ jobs:
         id: send-metrics
         continue-on-error: true  # Não bloqueia o workflow se a API ainda não estiver pronta
         env:
-          BACKEND_URL: ${{ secrets.BACKEND_API_URL }}
-          PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+          BACKEND_URL: ${{ secrets.BACKEND_API_URL || 'https://recebe-dados-sonarcloud.onrender.com' }}
+          PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY || 'gabrielsoaressn_fklearn' }}
         run: |
           #!/bin/bash
           set -euo pipefail
 
-          # Validar que os secrets estão configurados
-          if [ -z "$BACKEND_URL" ]; then
-            echo "❌ ERRO: Secret BACKEND_API_URL não configurado"
-            echo "Configure em: Settings > Secrets and variables > Actions"
-            exit 1
-          fi
-
-          if [ -z "$PROJECT_KEY" ]; then
-            echo "❌ ERRO: Secret SONAR_PROJECT_KEY não configurado"
-            echo "Configure em: Settings > Secrets and variables > Actions"
-            exit 1
-          fi
+          echo "🔧 Configuração:"
+          echo "   Backend URL: $BACKEND_URL"
+          echo "   Project Key: $PROJECT_KEY"
 
           # Preparar payload JSON
           PAYLOAD=$(cat <<'EOF'
